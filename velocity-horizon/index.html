@@ -1,0 +1,169 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Velocity Horizon — Open World Racing</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  html, body { width: 100%; height: 100%; overflow: hidden; background: #06080f;
+    font-family: "Segoe UI", system-ui, -apple-system, Roboto, Helvetica, Arial, sans-serif;
+    user-select: none; }
+  canvas#game { display: block; width: 100%; height: 100%; }
+
+  /* ---------- vignette ---------- */
+  #vignette { position: fixed; inset: 0; pointer-events: none; z-index: 3;
+    background: radial-gradient(ellipse at center, transparent 62%, rgba(0,0,0,0.42) 100%); }
+
+  /* ---------- loading ---------- */
+  #loading { position: fixed; inset: 0; z-index: 50; display: flex; flex-direction: column;
+    align-items: center; justify-content: center; background: linear-gradient(160deg,#0a1128,#111a3a 55%,#0a0f22);
+    color: #fff; transition: opacity .8s ease; }
+  #loading h1 { font-size: 52px; font-weight: 800; letter-spacing: 4px;
+    background: linear-gradient(90deg,#59d1ff,#8f7bff,#ff7bd5); -webkit-background-clip: text;
+    background-clip: text; color: transparent; text-transform: uppercase; }
+  #loading p { margin-top: 14px; color: #9db0d8; font-size: 15px; letter-spacing: 1px; }
+  #loading .bar { margin-top: 28px; width: 320px; height: 5px; border-radius: 3px;
+    background: rgba(255,255,255,.12); overflow: hidden; }
+  #loading .bar i { display: block; height: 100%; width: 40%; border-radius: 3px;
+    background: linear-gradient(90deg,#59d1ff,#8f7bff);
+    animation: slide 1.1s ease-in-out infinite alternate; }
+  @keyframes slide { from { margin-left: 0 } to { margin-left: 60% } }
+  #loading.done { opacity: 0; pointer-events: none; }
+
+  /* ---------- HUD panels ---------- */
+  .panel { position: fixed; z-index: 5; color: #eef3ff;
+    background: rgba(10,16,34,.55); border: 1px solid rgba(130,170,255,.18);
+    border-radius: 14px; backdrop-filter: blur(8px); -webkit-backdrop-filter: blur(8px);
+    box-shadow: 0 8px 30px rgba(0,0,0,.35); }
+
+  #hud-vehicle { top: 18px; left: 18px; padding: 12px 18px; min-width: 210px; }
+  #hud-vehicle .name { font-size: 19px; font-weight: 700; letter-spacing: .5px; }
+  #hud-vehicle .cls  { font-size: 12px; color: #7ec8ff; text-transform: uppercase; letter-spacing: 2px; margin-top: 2px; }
+  #hud-vehicle .hint { font-size: 11.5px; color: #93a4c8; margin-top: 8px; line-height: 1.5; }
+  #hud-vehicle .hint b { color: #cfe0ff; }
+
+  #hud-race { top: 18px; left: 50%; transform: translateX(-50%); padding: 10px 26px;
+    text-align: center; font-size: 15px; letter-spacing: .5px; }
+  #hud-race .big { font-size: 22px; font-weight: 800; color: #ffd75e; }
+  #hud-race .sub { font-size: 12.5px; color: #9db0d8; margin-top: 2px; }
+
+  #hud-speedo { right: 22px; bottom: 22px; padding: 16px 26px 14px; text-align: right; min-width: 190px; }
+  #hud-speedo .spd { font-size: 54px; font-weight: 800; line-height: 1;
+    font-variant-numeric: tabular-nums; letter-spacing: 1px;
+    background: linear-gradient(180deg,#ffffff,#9fc4ff); -webkit-background-clip: text;
+    background-clip: text; color: transparent; }
+  #hud-speedo .unit { font-size: 13px; color: #7ec8ff; letter-spacing: 3px; }
+  #hud-speedo .row { display: flex; align-items: center; justify-content: flex-end; gap: 8px; margin-top: 10px; }
+  #hud-speedo .lbl { font-size: 10px; letter-spacing: 2px; color: #93a4c8; }
+  .meter { width: 120px; height: 7px; background: rgba(255,255,255,.12); border-radius: 4px; overflow: hidden; }
+  .meter i { display: block; height: 100%; border-radius: 4px; transition: width .1s linear; }
+  #nitro-fill { background: linear-gradient(90deg,#3be8ff,#7b8cff); width: 100%; }
+  #alt-row { display: none; }
+  #thr-row { display: none; }
+  #thr-fill { background: linear-gradient(90deg,#ffd75e,#ff8f5e); width: 0%; }
+
+  #minimap-wrap { left: 18px; bottom: 18px; padding: 8px; }
+  #minimap { display: block; border-radius: 8px; }
+
+  #msg { position: fixed; z-index: 12; top: 34%; left: 50%; transform: translate(-50%,-50%);
+    font-size: 46px; font-weight: 800; color: #fff; text-align: center; letter-spacing: 2px;
+    text-shadow: 0 4px 30px rgba(0,0,0,.6), 0 0 40px rgba(90,160,255,.35);
+    opacity: 0; transition: opacity .25s ease; pointer-events: none; white-space: pre-line; }
+  #msg.show { opacity: 1; }
+
+  #help { top: 50%; right: 18px; transform: translateY(-50%); padding: 16px 20px;
+    font-size: 12.5px; line-height: 1.85; color: #c6d4f2; display: none; max-width: 280px; }
+  #help h3 { color: #7ec8ff; font-size: 13px; letter-spacing: 2px; margin-bottom: 6px; text-transform: uppercase; }
+  #help b { color: #fff; display: inline-block; min-width: 86px; }
+
+  /* ---------- garage ---------- */
+  #garage { position: fixed; inset: 0; z-index: 20; display: none; align-items: center;
+    justify-content: center; background: rgba(4,8,20,.78); backdrop-filter: blur(10px); }
+  #garage.open { display: flex; }
+  #garage .inner { width: min(1060px, 94vw); max-height: 88vh; overflow-y: auto; padding: 30px 34px;
+    background: rgba(12,18,40,.92); border: 1px solid rgba(130,170,255,.22); border-radius: 20px; }
+  #garage h2 { color: #fff; font-size: 26px; letter-spacing: 3px; text-transform: uppercase; }
+  #garage p.sub { color: #93a4c8; font-size: 13px; margin: 6px 0 20px; }
+  #garage .grid { display: grid; grid-template-columns: repeat(auto-fill,minmax(280px,1fr)); gap: 14px; }
+  .vcard { padding: 16px 18px; border-radius: 14px; cursor: pointer; border: 1px solid rgba(130,170,255,.16);
+    background: rgba(255,255,255,.04); transition: all .15s ease; color: #dfe8ff; }
+  .vcard:hover { background: rgba(120,160,255,.12); transform: translateY(-2px); }
+  .vcard.active { border-color: #59d1ff; background: rgba(89,209,255,.10); box-shadow: 0 0 0 1px #59d1ff inset; }
+  .vcard .key { float: right; font-size: 12px; color: #59d1ff; border: 1px solid rgba(89,209,255,.5);
+    border-radius: 6px; padding: 1px 8px; }
+  .vcard .nm { font-size: 17px; font-weight: 700; }
+  .vcard .tp { font-size: 11px; color: #7ec8ff; letter-spacing: 2px; text-transform: uppercase; margin: 2px 0 10px; }
+  .vcard .stat { display: flex; align-items: center; gap: 8px; font-size: 11px; color: #93a4c8; margin-top: 5px; }
+  .vcard .stat span { width: 64px; }
+  .vcard .sbar { flex: 1; height: 5px; border-radius: 3px; background: rgba(255,255,255,.1); overflow: hidden; }
+  .vcard .sbar i { display: block; height: 100%; background: linear-gradient(90deg,#59d1ff,#8f7bff); }
+</style>
+</head>
+<body>
+  <canvas id="game"></canvas>
+  <div id="vignette"></div>
+
+  <div id="loading">
+    <h1>Velocity Horizon</h1>
+    <p>Building your open world — mountains, city, coast &amp; airfield…</p>
+    <div class="bar"><i></i></div>
+  </div>
+
+  <div id="hud-vehicle" class="panel">
+    <div class="name" id="veh-name">—</div>
+    <div class="cls" id="veh-class">—</div>
+    <div class="hint" id="veh-hint"></div>
+  </div>
+
+  <div id="hud-race" class="panel">
+    <div class="big" id="race-main">FREE ROAM</div>
+    <div class="sub" id="race-sub">Press ENTER to start a race · V for garage · H for help</div>
+  </div>
+
+  <div id="hud-speedo" class="panel">
+    <div><span class="spd" id="spd">0</span></div>
+    <div class="unit" id="spd-unit">KM/H</div>
+    <div class="row" id="nitro-row"><span class="lbl">NITRO</span><span class="meter"><i id="nitro-fill"></i></span></div>
+    <div class="row" id="thr-row"><span class="lbl">THROTTLE</span><span class="meter"><i id="thr-fill"></i></span></div>
+    <div class="row" id="alt-row"><span class="lbl">ALTITUDE</span><span class="lbl" id="alt-val" style="color:#fff;font-size:13px">0 m</span></div>
+  </div>
+
+  <div id="minimap-wrap" class="panel"><canvas id="minimap" width="196" height="196"></canvas></div>
+
+  <div id="msg"></div>
+
+  <div id="help" class="panel">
+    <h3>Driving</h3>
+    <b>W / ↑</b> accelerate<br>
+    <b>S / ↓</b> brake / reverse<br>
+    <b>A D / ← →</b> steer<br>
+    <b>Space</b> handbrake · drift<br>
+    <b>Shift</b> nitro boost<br>
+    <h3 style="margin-top:10px">Flying</h3>
+    <b>W / S</b> throttle up / down<br>
+    <b>↑ / ↓</b> climb / dive<br>
+    <b>A / D or ← →</b> bank &amp; turn<br>
+    <h3 style="margin-top:10px">World</h3>
+    <b>1 – 7</b> quick-switch vehicle<br>
+    <b>V</b> garage<br>
+    <b>Enter</b> start / quit race<br>
+    <b>R</b> reset to road<br>
+    <b>T</b> teleport to airfield<br>
+    <b>C</b> camera view<br>
+    <b>N</b> skip time of day<br>
+    <b>M</b> mute · <b>H</b> close help
+  </div>
+
+  <div id="garage">
+    <div class="inner">
+      <h2>Garage</h2>
+      <p class="sub">Choose your machine — click a card or press its number key. Press V or Esc to close.</p>
+      <div class="grid" id="garage-grid"></div>
+    </div>
+  </div>
+
+  <script src="vendor/three.min.js"></script>
+  <script src="js/game.js"></script>
+</body>
+</html>
