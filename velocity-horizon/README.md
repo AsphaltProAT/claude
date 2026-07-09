@@ -67,8 +67,16 @@ mostly.
 ## 🔧 Tech notes
 
 - Pure [Three.js](https://threejs.org/) (vendored in `vendor/`), zero dependencies, no bundler
-- Everything procedural: terrain (value-noise fBm), road ribbon, city, vegetation — no downloaded assets
-- Arcade-sim physics: per-surface grip, weight-transfer-flavored drifting, slope forces,
-  stall/lift flight model, bike lean
-- Instanced rendering for trees/rocks/buildings, real-time shadows, ACES tone mapping
-- Engine + tire-skid audio synthesized live with WebAudio (no audio files)
+- Everything procedural: terrain (value-noise fBm), road ribbon, city, vegetation,
+  and every texture (asphalt, grass, building facades, water normals) painted at
+  load time on canvases — no downloaded assets
+- **PBR pipeline**: clearcoat car paint (`MeshPhysicalMaterial`), image-based lighting
+  from a PMREM-filtered procedural sky, ACES filmic tone mapping, sRGB color management
+- **Post-processing**: UnrealBloom + FXAA + gamma correction via EffectComposer
+- **Atmosphere shader**: custom sky dome GLSL — day/dawn/night gradients, sun disc,
+  procedural stars; environment relit as the sun moves
+- Night set-dressing: lit building windows (emissive maps), glowing street lamps,
+  working headlights
+- GPU particles (custom shader `Points`) for drift smoke, off-road dust and nitro flames
+- Arcade-sim physics: per-surface grip, drifting, slope forces, stall/lift flight
+  model, bike lean; engine + tire-skid audio synthesized live with WebAudio
