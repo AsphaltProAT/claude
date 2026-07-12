@@ -34,7 +34,7 @@ python3 -m http.server 8000
 | 3 | Trailcat 4X4 | Offroader | Barely slows down off tarmac |
 | 4 | Viper R | Superbike | Fast, flickable, leans into corners |
 | 5 | Dust Hopper | Dirt bike | Made for the hills |
-| 6 | Skyhawk | Stunt plane | Take off from the runway (press T) |
+| 6 | Skyhawk | Stunt plane | Real textured aerobatic model · press T for runway |
 | 7 | Thunder Jet | Jet | Afterburner scream, 475 km/h |
 
 ## 🎮 Controls
@@ -48,8 +48,10 @@ python3 -m http.server 8000
 | `Shift` | nitro boost | — |
 
 **World keys:** `Enter` start/quit race · `V` garage · `1–7` quick-switch vehicle ·
-`R` reset to road · `T` teleport to airfield · `C` camera view · `N` skip time of day ·
-`H` help · `M` mute
+`R` reset to road · `T` teleport to airfield · `C` camera (chase / close / **cockpit** / cinematic) ·
+`N` skip time of day · `H` help · `M` mute
+
+Try the cockpit camera in the 458 — full modelled interior with dashboard and mirror.
 
 ## 🏁 Racing
 
@@ -71,6 +73,9 @@ mostly.
   by **vicent091036**, from the three.js examples — meshopt-compressed and embedded
   as base64 (`assets/car-models.js`) so the game still runs from a double-clicked
   `index.html` with no server and no network
+- The stunt plane is the textured *aerobatic plane* from the free
+  [BabylonJS asset library](https://github.com/BabylonJS/Assets), converted from
+  spec-gloss to metal-rough PBR and embedded the same way (`assets/plane-model.js`)
 - Everything procedural: terrain (value-noise fBm), road ribbon, city, vegetation,
   and every texture (asphalt, grass, building facades, water normals) painted at
   load time on canvases — no downloaded assets

@@ -1107,7 +1107,8 @@ function buildCarFromGLB(cfg) {
   }
   const glass = root.getObjectByName('glass');
   if (glass) glass.material = new THREE.MeshPhysicalMaterial({
-    color: 0x181d24, metalness: 0.9, roughness: 0.05, envMapIntensity: 1.4
+    color: 0x11151c, metalness: 0.9, roughness: 0.05, envMapIntensity: 1.4,
+    transparent: true, opacity: 0.32
   });
   // ground the model: wheels rest at y = 0; model faces -Z so spin it around
   const bb = new THREE.Box3().setFromObject(root);
@@ -1123,8 +1124,38 @@ function buildCarFromGLB(cfg) {
       if (n === 'wheel_fl' || n === 'wheel_fr') steer.push(w);
     }
   }
-  return { group: g, glbRoot: root, wheels, steer, props: [], spinSign: -1 };
+  const sw = root.getObjectByName('steering_wheel');
+  return { group: g, glbRoot: root, wheels, steer, props: [], spinSign: -1, steerWheel: sw };
 }
+
+// Aerobatic stunt plane (BabylonJS free assets) — single instance, reused.
+let planeBuilt = null;
+(function loadPlaneModel() {
+  if (!window.VH_PLANE_GLB || !THREE.GLTFLoader) return;
+  try {
+    const bin = atob(window.VH_PLANE_GLB);
+    const buf = new Uint8Array(bin.length);
+    for (let i = 0; i < bin.length; i++) buf[i] = bin.charCodeAt(i);
+    const loader = new THREE.GLTFLoader();
+    if (window.MeshoptDecoder) loader.setMeshoptDecoder(window.MeshoptDecoder);
+    loader.parse(buf.buffer, '', (gltf) => {
+      const root = gltf.scene;
+      const g = new THREE.Group();
+      // The mesh is skinned and its rendered size lives in the skeleton's bind
+      // matrices, so bounding boxes lie. Scale calibrated visually: ~9 m wingspan.
+      const SCALE = 105;
+      root.scale.setScalar(SCALE);
+      const bb = new THREE.Box3().setFromObject(root);
+      root.position.y -= bb.min.y;
+      g.add(root);
+      root.traverse(o => { if (o.isMesh) { o.castShadow = true; o.frustumCulled = false; } });
+      const prop = root.getObjectByName('Propellor_Joint');
+      planeBuilt = { group: g, glbRoot: root, wheels: [], steer: [], props: prop ? [prop] : [] };
+      window.__planeModelLoaded = true;
+      if (player.cfg && player.cfg.glbPlane) setVehicle(VEHICLES.indexOf(player.cfg));
+    }, (e) => console.warn('plane model parse failed', e));
+  } catch (e) { console.warn('plane model decode failed', e); }
+})();
 
 function upgradeAIMeshes() {
   if (!carTemplate) return;
@@ -1152,7 +1183,7 @@ const VEHICLES = [
     hint: 'Fast and flickable — lean into corners.' },
   { key: '5', name: 'Dust Hopper', cls: 'Dirt bike',  kind: 'bike', color: 0xd05e17, maxSpeed: 48,  accel: 17, grip: 7.5, turn: 3.1, offroad: 0.9,
     hint: 'Made for the hills. Jump everything.' },
-  { key: '6', name: 'Skyhawk',     cls: 'Stunt plane',kind: 'plane',color: 0xdcd8cc, maxSpeed: 88,  accel: 15, grip: 0, turn: 1.6, offroad: 1, jet: false,
+  { key: '6', name: 'Skyhawk',     cls: 'Stunt plane',kind: 'plane',color: 0xdcd8cc, maxSpeed: 88,  accel: 15, grip: 0, turn: 1.6, offroad: 1, jet: false, glbPlane: true,
     hint: '<b>W/S</b> throttle · <b>↑↓</b> pitch · <b>A/D</b> bank. <b>T</b> = airfield.' },
   { key: '7', name: 'Thunder Jet', cls: 'Jet',        kind: 'plane',color: 0x2e3642, maxSpeed: 132, accel: 26, grip: 0, turn: 1.3, offroad: 1, jet: true,
     hint: 'Afterburner scream. Needs room to turn.' },
@@ -1182,6 +1213,7 @@ function setVehicle(idx) {
   if (!cfg) return;
   if (player.mesh) scene.remove(player.mesh);
   const built = (cfg.glb && carTemplate) ? buildCarFromGLB(cfg)
+    : (cfg.glbPlane && planeBuilt) ? planeBuilt
     : cfg.kind === 'car' ? buildCar(cfg) : cfg.kind === 'bike' ? buildBike(cfg) : buildPlane(cfg);
   player.cfg = cfg;
   player.mesh = built.group;
@@ -1189,6 +1221,7 @@ function setVehicle(idx) {
   player.steer = built.steer;
   player.props = built.props;
   player.spinSign = built.spinSign || 1;
+  player.steerWheel = built.steerWheel || null;
   player.vel.multiplyScalar(0.4);
   player.pitch = 0; player.roll = 0; player.throttleLevel = 0;
   player.grounded = true;
@@ -1237,7 +1270,7 @@ addEventListener('keydown', (e) => {
   if (k === 'KeyV') toggleGarage();
   if (k === 'Escape') closeGarage();
   if (k === 'KeyH') { const h = document.getElementById('help'); h.style.display = h.style.display === 'block' ? 'none' : 'block'; }
-  if (k === 'KeyC') camMode = (camMode + 1) % 3;
+  if (k === 'KeyC') camMode = (camMode + 1) % 4;
   if (k === 'KeyR' && !race.active) respawnToRoad();
   if (k === 'KeyT' && !race.active) teleportToAirfield();
   if (k === 'KeyN') dayTime = (dayTime + 0.08) % 1;
@@ -1391,6 +1424,7 @@ function stepGroundVehicle(dt) {
   const ss = player.spinSign || 1;
   for (const w of player.wheels) w.rotation.x = player.wheelSpin * ss;
   for (const p of player.steer) p.rotation.y = inp.steer * 0.42 * ss;
+  if (player.steerWheel) player.steerWheel.rotation.z = inp.steer * 1.6;
   const n = player.grounded ? groundNormal(player.pos.x, player.pos.z) : new THREE.Vector3(0, 1, 0);
   const fwd = tmpV.set(fx, 0, fz).addScaledVector(n, -n.dot(tmpV2.set(fx, 0, fz))).normalize();
   const right = tmpV2.crossVectors(n, fwd);
@@ -1747,20 +1781,40 @@ function stepCamera(dt, speed) {
   } else if (camMode === 1) {
     const back = cfg.kind === 'plane' ? 10 : 4.5;
     target = tmpV.set(player.pos.x - fx * back, player.pos.y + 2.0, player.pos.z - fz * back);
+  } else if (camMode === 2) {           // cockpit / driver's eye
+    const up = cfg.kind === 'plane' ? 2.2 : cfg.kind === 'bike' ? 1.55 : 1.16;
+    const rxv = fz, rzv = -fx;          // sit on the left for the car
+    const side = cfg.kind === 'car' ? -0.34 : 0;
+    const fwd = cfg.kind === 'plane' ? 0.3 : -0.1;
+    target = tmpV.set(
+      player.pos.x + fx * fwd + rxv * side,
+      player.pos.y + up,
+      player.pos.z + fz * fwd + rzv * side);
   } else {
     const a = performance.now() * 0.00025;
     target = tmpV.set(player.pos.x + Math.cos(a) * 22, player.pos.y + 9, player.pos.z + Math.sin(a) * 22);
   }
-  const camGround = terrainHeight(target.x, target.z) + 1.2;
-  if (target.y < camGround) target.y = camGround;
-  const k = 1 - Math.exp(-(camMode === 2 ? 2.2 : 5.5) * dt);
+  if (camMode !== 2) {
+    const camGround = terrainHeight(target.x, target.z) + 1.2;
+    if (target.y < camGround) target.y = camGround;
+  }
+  const k = 1 - Math.exp(-(camMode === 3 ? 2.2 : camMode === 2 ? 22 : 5.5) * dt);
   camPos.lerp(target, k);
   camera.position.copy(camPos);
   // speed shake
-  const sh = spdRatio * spdRatio * 0.09;
+  const sh = spdRatio * spdRatio * (camMode === 2 ? 0.03 : 0.09);
   camera.position.x += (Math.random() - 0.5) * sh;
   camera.position.y += (Math.random() - 0.5) * sh;
-  camera.lookAt(player.pos.x + fx * 10, player.pos.y + 1.6, player.pos.z + fz * 10);
+  if (camMode === 2 && cfg.kind === 'plane') {
+    camera.lookAt(
+      camera.position.x + Math.sin(player.yaw) * 30 * Math.cos(player.pitch),
+      camera.position.y + Math.sin(player.pitch) * 30,
+      camera.position.z + Math.cos(player.yaw) * 30 * Math.cos(player.pitch));
+  } else if (camMode === 2) {
+    camera.lookAt(camera.position.x + fx * 30, camera.position.y - 0.15, camera.position.z + fz * 30);
+  } else {
+    camera.lookAt(player.pos.x + fx * 10, player.pos.y + 1.6, player.pos.z + fz * 10);
+  }
   camera.fov = lerp(camera.fov, 62 + spdRatio * 16, 1 - Math.exp(-4 * dt));
   camera.updateProjectionMatrix();
 }
