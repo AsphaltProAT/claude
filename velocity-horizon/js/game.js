@@ -1072,9 +1072,77 @@ function buildPlane(cfg) {
   return { group: shadowify(g), wheels, steer: [], props };
 }
 
+/* ----------------------------------------------- real high-poly car ----- */
+// Ferrari 458 Italia (~340k vertices) by vicent091036, from the three.js
+// examples — decoded from the embedded base64 glb at startup.
+let carTemplate = null;
+(function loadCarModel() {
+  if (!window.VH_CAR_GLB || !THREE.GLTFLoader) return;
+  try {
+    const bin = atob(window.VH_CAR_GLB);
+    const buf = new Uint8Array(bin.length);
+    for (let i = 0; i < bin.length; i++) buf[i] = bin.charCodeAt(i);
+    const loader = new THREE.GLTFLoader();
+    if (window.MeshoptDecoder) loader.setMeshoptDecoder(window.MeshoptDecoder);
+    loader.parse(buf.buffer, '', (gltf) => {
+      carTemplate = gltf.scene;
+      window.__carModelLoaded = true;
+      // refresh anything already built from the placeholder
+      if (player.cfg && player.cfg.glb) setVehicle(VEHICLES.indexOf(player.cfg));
+      upgradeAIMeshes();
+    }, (e) => console.warn('car model parse failed', e));
+  } catch (e) { console.warn('car model decode failed', e); }
+})();
+
+function buildCarFromGLB(cfg) {
+  const g = new THREE.Group();
+  const root = carTemplate.clone(true);
+  // re-skin the demo model with our clearcoat paint + glass
+  const body = root.getObjectByName('body');
+  if (body) body.material = paintMat(cfg.color);
+  const details = chromeMat();
+  for (const n of ['rim_fl', 'rim_fr', 'rim_rl', 'rim_rr', 'trim']) {
+    const o = root.getObjectByName(n);
+    if (o) o.material = details;
+  }
+  const glass = root.getObjectByName('glass');
+  if (glass) glass.material = new THREE.MeshPhysicalMaterial({
+    color: 0x181d24, metalness: 0.9, roughness: 0.05, envMapIntensity: 1.4
+  });
+  // ground the model: wheels rest at y = 0; model faces -Z so spin it around
+  const bb = new THREE.Box3().setFromObject(root);
+  root.position.y -= bb.min.y;
+  root.rotation.y = Math.PI;
+  g.add(root);
+  if (cfg.castShadow !== false) root.traverse(o => { if (o.isMesh) o.castShadow = true; });
+  const wheels = [], steer = [];
+  for (const n of ['wheel_fl', 'wheel_fr', 'wheel_rl', 'wheel_rr']) {
+    const w = root.getObjectByName(n);
+    if (w) {
+      wheels.push(w);
+      if (n === 'wheel_fl' || n === 'wheel_fr') steer.push(w);
+    }
+  }
+  return { group: g, glbRoot: root, wheels, steer, props: [], spinSign: -1 };
+}
+
+function upgradeAIMeshes() {
+  if (!carTemplate) return;
+  const colors = [0xcfd2d6, 0xd07a14, 0x7b3fb8];
+  aiRacers.forEach((ai, i) => {
+    scene.remove(ai.mesh);
+    const b = buildCarFromGLB({ color: colors[i], castShadow: false });
+    ai.mesh = b.group;
+    ai.wheels = b.wheels;
+    ai.spinSign = -1;
+    scene.add(ai.mesh);
+    placeAI(ai);
+  });
+}
+
 /* ------------------------------------------------------ vehicle configs - */
 const VEHICLES = [
-  { key: '1', name: 'Falcon GT',   cls: 'Hypercar',   kind: 'car',  profile: 'sports', color: 0xb51f24, maxSpeed: 94,  accel: 26, grip: 9.0, turn: 2.5, offroad: 0.45, spoiler: true,
+  { key: '1', name: '458 Italia',  cls: 'Hypercar',   kind: 'car',  profile: 'sports', glb: true, color: 0xc4161c, maxSpeed: 94,  accel: 26, grip: 9.0, turn: 2.5, offroad: 0.45, spoiler: true,
     hint: '<b>W</b> gas · <b>Space</b> drift · <b>Shift</b> nitro' },
   { key: '2', name: 'Bandit V8',   cls: 'Muscle',     kind: 'car',  profile: 'muscle', color: 0x1d4fc4, maxSpeed: 80,  accel: 22, grip: 6.5, turn: 2.3, offroad: 0.5,  spoiler: false,
     hint: 'Loves going sideways. <b>Space</b> to drift.' },
@@ -1113,12 +1181,14 @@ function setVehicle(idx) {
   const cfg = VEHICLES[idx];
   if (!cfg) return;
   if (player.mesh) scene.remove(player.mesh);
-  const built = cfg.kind === 'car' ? buildCar(cfg) : cfg.kind === 'bike' ? buildBike(cfg) : buildPlane(cfg);
+  const built = (cfg.glb && carTemplate) ? buildCarFromGLB(cfg)
+    : cfg.kind === 'car' ? buildCar(cfg) : cfg.kind === 'bike' ? buildBike(cfg) : buildPlane(cfg);
   player.cfg = cfg;
   player.mesh = built.group;
   player.wheels = built.wheels;
   player.steer = built.steer;
   player.props = built.props;
+  player.spinSign = built.spinSign || 1;
   player.vel.multiplyScalar(0.4);
   player.pitch = 0; player.roll = 0; player.throttleLevel = 0;
   player.grounded = true;
@@ -1318,8 +1388,9 @@ function stepGroundVehicle(dt) {
 
   // ------- visuals
   player.wheelSpin += vf * dt / 0.36;
-  for (const w of player.wheels) w.rotation.x = player.wheelSpin;
-  for (const p of player.steer) p.rotation.y = inp.steer * 0.42;
+  const ss = player.spinSign || 1;
+  for (const w of player.wheels) w.rotation.x = player.wheelSpin * ss;
+  for (const p of player.steer) p.rotation.y = inp.steer * 0.42 * ss;
   const n = player.grounded ? groundNormal(player.pos.x, player.pos.z) : new THREE.Vector3(0, 1, 0);
   const fwd = tmpV.set(fx, 0, fz).addScaledVector(n, -n.dot(tmpV2.set(fx, 0, fz))).normalize();
   const right = tmpV2.crossVectors(n, fwd);
@@ -1499,7 +1570,7 @@ function stepAI(dt) {
     if (ai.t < prev) ai.laps++;
     placeAI(ai);
     ai.spin += ai.speed * dt / 0.36;
-    for (const w of ai.wheels) w.rotation.x = ai.spin;
+    for (const w of ai.wheels) w.rotation.x = ai.spin * (ai.spinSign || 1);
   }
 }
 
@@ -1556,6 +1627,11 @@ function startRace() {
   player.pos.copy(p); player.pos.y += 0.4;
   player.vel.set(0, 0, 0);
   player.yaw = Math.atan2(tan.x, tan.z);
+  // snap mesh + camera to the grid so the countdown shows the line-up
+  player.mesh.position.copy(player.pos);
+  player.mesh.rotation.set(0, player.yaw, 0);
+  const fx = Math.sin(player.yaw), fz = Math.cos(player.yaw);
+  camPos.set(player.pos.x - fx * 9.5, player.pos.y + 3.4, player.pos.z - fz * 9.5);
   parkAI();
   setGateGlow(0);
 }

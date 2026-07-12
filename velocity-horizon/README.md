@@ -29,7 +29,7 @@ python3 -m http.server 8000
 
 | # | Vehicle | Class | Character |
 |---|---------|-------|-----------|
-| 1 | Falcon GT | Hypercar | 340 km/h monster, huge grip |
+| 1 | 458 Italia | Hypercar | Real ~340k-vertex model · 340 km/h |
 | 2 | Bandit V8 | Muscle | Loves going sideways |
 | 3 | Trailcat 4X4 | Offroader | Barely slows down off tarmac |
 | 4 | Viper R | Superbike | Fast, flickable, leans into corners |
@@ -67,6 +67,10 @@ mostly.
 ## 🔧 Tech notes
 
 - Pure [Three.js](https://threejs.org/) (vendored in `vendor/`), zero dependencies, no bundler
+- The hypercar (and AI rivals) is a real high-poly glTF model — *Ferrari 458 Italia*
+  by **vicent091036**, from the three.js examples — meshopt-compressed and embedded
+  as base64 (`assets/car-models.js`) so the game still runs from a double-clicked
+  `index.html` with no server and no network
 - Everything procedural: terrain (value-noise fBm), road ribbon, city, vegetation,
   and every texture (asphalt, grass, building facades, water normals) painted at
   load time on canvases — no downloaded assets
