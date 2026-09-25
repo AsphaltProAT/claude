@@ -73,6 +73,12 @@ mostly.
   by **vicent091036**, from the three.js examples — meshopt-compressed and embedded
   as base64 (`assets/car-models.js`) so the game still runs from a double-clicked
   `index.html` with no server and no network
+- **Photoscanned terrain & roads** — real PBR texture scans (color + normal +
+  roughness) from [Poly Haven](https://polyhaven.com), CC0: `rocky_terrain_02`,
+  `forest_ground_04`, `rock_face_03`, `coast_sand_01`, `snow_02`, `asphalt_track`.
+  A custom splat-map shader blends six ground materials per pixel from slope,
+  height, noise and road/city proximity, with height-aware transitions and
+  two-scale sampling to hide tiling (`assets/textures.js`, ~4 MB)
 - The stunt plane is the textured *aerobatic plane* from the free
   [BabylonJS asset library](https://github.com/BabylonJS/Assets), converted from
   spec-gloss to metal-rough PBR and embedded the same way (`assets/plane-model.js`)

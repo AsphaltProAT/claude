@@ -382,11 +382,141 @@ scene.add(sunSprite);
 CITY_H = lowHeight(0, 0);
 STRIP_H = lowHeight(STRIP.x, STRIP.z);
 
+/* ------------------------------------------- photoscanned PBR textures -- */
+// Poly Haven (CC0) maps, embedded as data URIs by assets/textures.js.
+const PHOTO = !!window.VH_TEX;
+const texLoader = new THREE.TextureLoader();
+const maxAniso = renderer.capabilities.getMaxAnisotropy();
+function photoTex(key, srgb, repX, repY) {
+  const t = texLoader.load(window.VH_TEX[key]);
+  t.wrapS = t.wrapT = THREE.RepeatWrapping;
+  if (srgb) t.encoding = THREE.sRGBEncoding;
+  t.anisotropy = maxAniso;
+  if (repX) t.repeat.set(repX, repY || repX);
+  return t;
+}
+
+const SPLAT_LAYERS = ['grass', 'dirt', 'rock', 'snow', 'sand', 'pave'];
+const SPLAT_SRC = { grass: 'grass', dirt: 'dirt', rock: 'rock', snow: 'snow', sand: 'sand', pave: 'asph' };
+
+function makeSplatMaterial() {
+  const mat = new THREE.MeshStandardMaterial({
+    vertexColors: true, roughness: 0.95, metalness: 0, envMapIntensity: 0.35
+  });
+  const uniforms = {};
+  for (const l of SPLAT_LAYERS) {
+    uniforms['t_' + l + 'C'] = { value: photoTex(SPLAT_SRC[l] + '_col', true) };
+    uniforms['t_' + l + 'N'] = { value: photoTex(SPLAT_SRC[l] + '_nor', false) };
+  }
+  mat.onBeforeCompile = (shader) => {
+    Object.assign(shader.uniforms, uniforms);
+    shader.vertexShader = shader.vertexShader
+      .replace('#include <common>', `#include <common>
+        attribute vec4 aSplatA;      // grass, dirt, rock, snow
+        attribute vec2 aSplatB;      // sand, paved
+        varying vec4 vSplatA; varying vec2 vSplatB; varying vec3 vWPos;`)
+      .replace('#include <fog_vertex>', `#include <fog_vertex>
+        vSplatA = aSplatA; vSplatB = aSplatB;
+        vWPos = (modelMatrix * vec4(transformed, 1.0)).xyz;`);
+    const samplers = SPLAT_LAYERS.map(l => `uniform sampler2D t_${l}C; uniform sampler2D t_${l}N;`).join('\n');
+    shader.fragmentShader = shader.fragmentShader
+      .replace('#include <common>', `#include <common>
+        ${samplers}
+        varying vec4 vSplatA; varying vec2 vSplatB; varying vec3 vWPos;
+        float splatLum(vec3 c) { return dot(c, vec3(0.299, 0.587, 0.114)); }`)
+      .replace('#include <map_fragment>', `
+        // --- two-scale sampling hides tiling: near 7 m tiles, far 43 m rotated
+        vec2 uvN = vWPos.xz / 7.0;
+        vec2 uvP = vWPos.xz / 5.0;
+        vec2 uvF = mat2(0.8, -0.6, 0.6, 0.8) * (vWPos.xz / 43.0);
+        float farMix = 0.3 + 0.45 * smoothstep(15.0, 180.0, length(vWPos - cameraPosition));
+        vec3 cGrass = mix(texture2D(t_grassC, uvN).rgb, texture2D(t_grassC, uvF).rgb, farMix);
+        vec3 cDirt  = mix(texture2D(t_dirtC,  uvN).rgb, texture2D(t_dirtC,  uvF).rgb, farMix);
+        vec3 cRock  = mix(texture2D(t_rockC,  uvN).rgb, texture2D(t_rockC,  uvF).rgb, farMix);
+        vec3 cSnow  = mix(texture2D(t_snowC,  uvN).rgb, texture2D(t_snowC,  uvF).rgb, farMix);
+        vec3 cSand  = mix(texture2D(t_sandC,  uvN).rgb, texture2D(t_sandC,  uvF).rgb, farMix);
+        vec3 cPave  = texture2D(t_paveC, uvP).rgb * 7.5;   // lift dark race-tar scan
+        // --- height-aware blending: brighter (raised) texels win the transition
+        vec4 swA = vSplatA * (vec4(splatLum(cGrass), splatLum(cDirt), splatLum(cRock), splatLum(cSnow)) + 0.35);
+        vec2 swB = vSplatB * (vec2(splatLum(cSand), splatLum(cPave)) + 0.35);
+        swA = swA * swA * swA * swA; swB = swB * swB * swB * swB;
+        float swSum = max(dot(swA, vec4(1.0)) + swB.x + swB.y, 1e-5);
+        swA /= swSum; swB /= swSum;
+        vec3 splatCol = cGrass * swA.x + cDirt * swA.y + cRock * swA.z + cSnow * swA.w
+                      + cSand * swB.x + cPave * swB.y;
+        diffuseColor.rgb *= splatCol;`)
+      .replace('#include <roughnessmap_fragment>', `#include <roughnessmap_fragment>
+        roughnessFactor = dot(swA, vec4(0.96, 0.97, 0.86, 0.55)) + swB.x * 0.92 + swB.y * 0.8;`)
+      .replace('#include <normal_fragment_maps>', `
+        {
+          vec3 tn = (texture2D(t_grassN, uvN).xyz * 2.0 - 1.0) * swA.x
+                  + (texture2D(t_dirtN,  uvN).xyz * 2.0 - 1.0) * swA.y
+                  + (texture2D(t_rockN,  uvN).xyz * 2.0 - 1.0) * swA.z
+                  + (texture2D(t_snowN,  uvN).xyz * 2.0 - 1.0) * swA.w
+                  + (texture2D(t_sandN,  uvN).xyz * 2.0 - 1.0) * swB.x
+                  + (texture2D(t_paveN,  uvP).xyz * 2.0 - 1.0) * swB.y;
+          tn.xy *= 1.1 - farMix;               // flatten micro-detail with distance
+          // world-aligned tangent frame: u -> +X, v -> +Z (heightfield terrain)
+          vec3 Tv = (viewMatrix * vec4(1.0, 0.0, 0.0, 0.0)).xyz;
+          vec3 Bv = (viewMatrix * vec4(0.0, 0.0, 1.0, 0.0)).xyz;
+          Tv = normalize(Tv - normal * dot(normal, Tv));
+          Bv = normalize(Bv - normal * dot(normal, Bv) - Tv * dot(Tv, Bv));
+          normal = normalize(Tv * tn.x + Bv * tn.y + normal * max(tn.z, 0.2));
+        }`);
+  };
+  return mat;
+}
+
 (function buildTerrain() {
   const SEG = 300;
   const geo = new THREE.PlaneGeometry(WORLD, WORLD, SEG, SEG);
   geo.rotateX(-Math.PI / 2);
   const pos = geo.attributes.position;
+  if (PHOTO) {
+    const splatA = new Float32Array(pos.count * 4), splatB = new Float32Array(pos.count * 2);
+    const colors = new Float32Array(pos.count * 3);
+    for (let i = 0; i < pos.count; i++) {
+      const x = pos.getX(i), z = pos.getZ(i);
+      const h = terrainHeight(x, z);
+      const roadD = roadDistInfo(x, z).d;
+      // sink the (coarse, ~11 m) terrain mesh slightly under the road ribbon
+      // so linear interpolation between vertices can't poke through the tarmac
+      pos.setY(i, h - 0.45 * (1 - smoothstep(ROAD_HALF + 2, ROAD_HALF + 14, roadD)));
+      const sl = Math.hypot(
+        terrainHeight(x + 3, z) - terrainHeight(x - 3, z),
+        terrainHeight(x, z + 3) - terrainHeight(x, z - 3)) / 6;
+      const rock = smoothstep(0.32, 0.62, sl);
+      const snow = smoothstep(55 + vnoise(x * 0.01, z * 0.01) * 8, 66, h) * (1 - rock * 0.5);
+      const sand = 1 - smoothstep(WATER_Y + 0.8, WATER_Y + 3.4, h);
+      // dirt: noise patches plus worn road shoulders
+      const shoulder = 1 - smoothstep(ROAD_HALF + 1, ROAD_HALF + 7, roadD);
+      const dirt = Math.max(smoothstep(0.54, 0.70, vnoise(x * 0.004 + 7.3, z * 0.004 + 2.1)) * 0.9, shoulder * 0.75);
+      // paved: city plateau and airfield apron
+      const dc = Math.hypot(x, z);
+      const ddx = Math.abs(x - STRIP.x) - STRIP.hl, ddz = Math.abs(z - STRIP.z) - STRIP.hw;
+      const pave = Math.max(1 - smoothstep(CITY_R - 22, CITY_R - 4, dc),
+                            1 - smoothstep(4, 16, Math.max(ddx, ddz)));
+      const others = Math.min(1, rock + snow + sand + dirt + pave);
+      splatA[i * 4] = Math.max(0, 1 - others) + 0.02;  // grass fills the rest
+      splatA[i * 4 + 1] = dirt;
+      splatA[i * 4 + 2] = rock;
+      splatA[i * 4 + 3] = snow;
+      splatB[i * 2] = sand;
+      splatB[i * 2 + 1] = pave;
+      // macro tint breaks up large-scale repetition
+      const m = 0.82 + vnoise(x * 0.006 + 3.1, z * 0.006 + 8.7) * 0.3;
+      const warm = vnoise(x * 0.0025, z * 0.0025) * 0.08;
+      colors[i * 3] = m + warm; colors[i * 3 + 1] = m; colors[i * 3 + 2] = m - warm;
+    }
+    geo.setAttribute('aSplatA', new THREE.BufferAttribute(splatA, 4));
+    geo.setAttribute('aSplatB', new THREE.BufferAttribute(splatB, 2));
+    geo.setAttribute('color', new THREE.BufferAttribute(colors, 3));
+    geo.computeVertexNormals();
+    const mesh = new THREE.Mesh(geo, makeSplatMaterial());
+    mesh.receiveShadow = true;
+    scene.add(mesh);
+    return;
+  }
   const uv = geo.attributes.uv;
   for (let i = 0; i < uv.count; i++) uv.setXY(i, uv.getX(i) * 160, uv.getY(i) * 160);
   const colors = new Float32Array(pos.count * 3);
@@ -476,7 +606,16 @@ let lampHeadMat;
     scene.add(m);
     return m;
   }
-  ribbon(ROAD_HALF, 0.10, new THREE.MeshStandardMaterial({
+  // road UVs: u spans the 16 m width, v advances 1 per 14 m -> ~6 m tiles
+  ribbon(ROAD_HALF, 0.10, PHOTO ? new THREE.MeshStandardMaterial({
+    map: photoTex('asph_col', true, 16 / 6, 14 / 6),
+    normalMap: photoTex('asph_nor', false, 16 / 6, 14 / 6),
+    normalScale: new THREE.Vector2(0.9, 0.9),
+    roughnessMap: photoTex('asph_rough', false, 16 / 6, 14 / 6),
+    // the scan is fresh race tar (albedo ~0.008); lift to worn-road ~0.05
+    color: new THREE.Color().setScalar(6.2), roughness: 1.0, metalness: 0.0,
+    side: THREE.DoubleSide, envMapIntensity: 0.6
+  }) : new THREE.MeshStandardMaterial({
     map: asphaltTex, bumpMap: asphaltBump, bumpScale: 0.15,
     roughness: 0.85, metalness: 0.05, side: THREE.DoubleSide, envMapIntensity: 0.5
   }), 0, true);
@@ -501,6 +640,38 @@ let lampHeadMat;
     g.setAttribute('position', new THREE.BufferAttribute(new Float32Array(verts), 3));
     g.setIndex(idx); g.computeVertexNormals();
     scene.add(new THREE.Mesh(g, lineMat));
+  }
+  // gravel shoulders: slope from the tarmac edge down into the sunken terrain
+  if (PHOTO) {
+    const shoulderMat = new THREE.MeshStandardMaterial({
+      map: photoTex('dirt_col', true, 1, 1), normalMap: photoTex('dirt_nor', false, 1, 1),
+      color: 0x9a9288, roughness: 0.97, side: THREE.DoubleSide, envMapIntensity: 0.3
+    });
+    for (const s of [-1, 1]) {
+      const verts = [], uvs = [], idx = [];
+      let vAcc = 0;
+      for (let i = 0; i <= ROAD_SEGS; i++) {
+        const { c, nrm } = pts[i];
+        if (i > 0) vAcc += c.distanceTo(pts[i - 1].c) / 7;
+        const a = c.clone().addScaledVector(nrm, s * ROAD_HALF);
+        const b = c.clone().addScaledVector(nrm, s * (ROAD_HALF + 2.2));
+        a.y = terrainHeight(a.x, a.z) + 0.09;
+        b.y = terrainHeight(b.x, b.z) - 0.5;
+        verts.push(a.x, a.y, a.z, b.x, b.y, b.z);
+        uvs.push(0, vAcc, 0.32, vAcc);
+      }
+      for (let i = 0; i < ROAD_SEGS; i++) {
+        const a = i * 2, b = i * 2 + 1, c2 = i * 2 + 2, d = i * 2 + 3;
+        idx.push(a, b, c2, b, d, c2);
+      }
+      const g = new THREE.BufferGeometry();
+      g.setAttribute('position', new THREE.BufferAttribute(new Float32Array(verts), 3));
+      g.setAttribute('uv', new THREE.BufferAttribute(new Float32Array(uvs), 2));
+      g.setIndex(idx); g.computeVertexNormals();
+      const m = new THREE.Mesh(g, shoulderMat);
+      m.receiveShadow = true;
+      scene.add(m);
+    }
   }
   // street lamps around the loop (emissive heads glow at night via bloom)
   const lampCount = 48;
@@ -596,7 +767,13 @@ let buildingMat;
   g.rotateX(-Math.PI / 2);
   const uv = g.attributes.uv;
   for (let i = 0; i < uv.count; i++) uv.setXY(i, uv.getX(i) * 36, uv.getY(i) * 4);
-  const strip = new THREE.Mesh(g, new THREE.MeshStandardMaterial({
+  // runway UV units are ~14 m x 13 m, so repeat 2 -> ~7 m photo tiles
+  const strip = new THREE.Mesh(g, PHOTO ? new THREE.MeshStandardMaterial({
+    map: photoTex('asph_col', true, 2, 2),
+    normalMap: photoTex('asph_nor', false, 2, 2),
+    roughnessMap: photoTex('asph_rough', false, 2, 2),
+    color: new THREE.Color().setScalar(8), roughness: 1.0, envMapIntensity: 0.5
+  }) : new THREE.MeshStandardMaterial({
     map: asphaltTex, bumpMap: asphaltBump, bumpScale: 0.12,
     color: 0xb9babd, roughness: 0.9, envMapIntensity: 0.4
   }));
@@ -699,7 +876,10 @@ const treeGrid = new Map();
   const R = 300;
   const rockGeo = new THREE.DodecahedronGeometry(1.6, 1);
   const rocks = new THREE.InstancedMesh(rockGeo,
-    new THREE.MeshStandardMaterial({ color: 0x8d867a, roughness: 0.95, envMapIntensity: 0.3 }), R);
+    PHOTO ? new THREE.MeshStandardMaterial({
+      map: photoTex('rock_col', true, 1.5, 1.5), normalMap: photoTex('rock_nor', false, 1.5, 1.5),
+      roughness: 0.9, envMapIntensity: 0.3
+    }) : new THREE.MeshStandardMaterial({ color: 0x8d867a, roughness: 0.95, envMapIntensity: 0.3 }), R);
   let rp = 0;
   for (let i = 0; i < R * 20 && rp < R; i++) {
     const x = (hash2(i, 101) - 0.5) * (WORLD - 200);
