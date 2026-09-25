@@ -1,0 +1,85 @@
+<!DOCTYPE html>
+<html><body style="margin:0;background:#888">
+<script src="three.min.js"></script>
+<script src="GLTFLoader.js"></script>
+<script>
+// Impostor baker: renders a glTF tree from N azimuths into an RGBA atlas.
+THREE.ColorManagement.legacyMode = false;
+
+function dilate(ctx, w, h, passes) {
+  // Push opaque colours outward into transparent pixels (alpha stays 0) so
+  // mipmaps and bilinear filtering don't pull black fringes into leaf edges.
+  const img = ctx.getImageData(0, 0, w, h), d = img.data;
+  const solid = new Uint8Array(w * h);
+  for (let i = 0; i < w * h; i++) solid[i] = d[i * 4 + 3] > 8 ? 1 : 0;
+  for (let p = 0; p < passes; p++) {
+    const add = [];
+    for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) {
+      const i = y * w + x;
+      if (solid[i]) continue;
+      let r = 0, g = 0, b = 0, n = 0;
+      for (const [dx, dy] of [[1,0],[-1,0],[0,1],[0,-1]]) {
+        const xx = x + dx, yy = y + dy;
+        if (xx < 0 || yy < 0 || xx >= w || yy >= h) continue;
+        const j = yy * w + xx;
+        if (!solid[j]) continue;
+        r += d[j*4]; g += d[j*4+1]; b += d[j*4+2]; n++;
+      }
+      if (n) add.push([i, r / n, g / n, b / n]);
+    }
+    for (const [i, r, g, b] of add) { d[i*4] = r; d[i*4+1] = g; d[i*4+2] = b; solid[i] = 1; }
+  }
+  ctx.putImageData(img, 0, 0);
+}
+
+window.bake = async function (url, nodeName, views, cellW, cellH) {
+  const gltf = await new Promise((res, rej) => new THREE.GLTFLoader().load(url, res, undefined, rej));
+  let obj = gltf.scene;
+  if (nodeName) {
+    const n = gltf.scene.getObjectByName(nodeName);
+    n.position.set(0, 0, 0);
+    obj = new THREE.Group(); obj.add(n);
+  }
+  obj.traverse(o => {
+    if (o.isMesh) {
+      const m = o.material;
+      m.side = THREE.DoubleSide;
+      m.transparent = false; m.alphaTest = 0.5; m.depthWrite = true;
+    }
+  });
+  const box = new THREE.Box3().setFromObject(obj);
+  const H = box.max.y - Math.min(box.min.y, 0);
+  const R = Math.max(Math.abs(box.min.x), Math.abs(box.max.x), Math.abs(box.min.z), Math.abs(box.max.z));
+
+  const scene = new THREE.Scene();
+  scene.add(obj);
+  scene.add(new THREE.HemisphereLight(0xdfeaff, 0x3a3226, 1.05));
+  const key = new THREE.DirectionalLight(0xfff4e0, 1.6);
+  scene.add(key); scene.add(key.target);
+
+  const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true, preserveDrawingBuffer: true });
+  renderer.outputEncoding = THREE.sRGBEncoding;
+  renderer.setClearColor(0x000000, 0);
+  renderer.setSize(cellW, cellH);
+  document.body.appendChild(renderer.domElement);
+
+  // frame: width 2R around the trunk axis, height H (+2 % margin)
+  const cam = new THREE.OrthographicCamera(-R * 1.02, R * 1.02, H * 1.02, 0, -50, 50);
+  const atlas = document.createElement('canvas');
+  atlas.width = cellW * views; atlas.height = cellH;
+  const actx = atlas.getContext('2d');
+  for (let v = 0; v < views; v++) {
+    const az = (v / views) * Math.PI;           // 0°, 60°, 120° for 3 views
+    cam.position.set(Math.sin(az) * 10, 0, Math.cos(az) * 10);
+    cam.up.set(0, 1, 0);
+    cam.lookAt(0, 0, 0);
+    // key light: high, slightly toward the viewer so the baked card reads lit
+    key.position.set(Math.sin(az + 0.6) * 6, 9, Math.cos(az + 0.6) * 6);
+    renderer.render(scene, cam);
+    actx.drawImage(renderer.domElement, v * cellW, 0);
+  }
+  dilate(actx, atlas.width, atlas.height, 6);
+  return { dataUrl: atlas.toDataURL('image/webp', 0.86), H, R, views };
+};
+</script>
+</body></html>

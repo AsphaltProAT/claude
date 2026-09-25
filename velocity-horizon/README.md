@@ -79,6 +79,11 @@ mostly.
   A custom splat-map shader blends six ground materials per pixel from slope,
   height, noise and road/city proximity, with height-aware transitions and
   two-scale sampling to hide tiling (`assets/textures.js`, ~4 MB)
+- **Impostor forests** — Poly Haven's film-grade tree models (`fir_sapling`,
+  `island_tree_02`, CC0; hundreds of thousands of polygons each) are rendered
+  offline from 3 angles into alpha atlases, and each of the ~4,000 trees is drawn
+  as 3 intersecting cards (12 triangles) with alpha-tested shadows — the same
+  technique AAA open worlds use for distant vegetation (`assets/trees.js`)
 - The stunt plane is the textured *aerobatic plane* from the free
   [BabylonJS asset library](https://github.com/BabylonJS/Assets), converted from
   spec-gloss to metal-rough PBR and embedded the same way (`assets/plane-model.js`)

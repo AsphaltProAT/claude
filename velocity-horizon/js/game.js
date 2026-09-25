@@ -495,7 +495,7 @@ function makeSplatMaterial() {
       const dc = Math.hypot(x, z);
       const ddx = Math.abs(x - STRIP.x) - STRIP.hl, ddz = Math.abs(z - STRIP.z) - STRIP.hw;
       const pave = Math.max(1 - smoothstep(CITY_R - 22, CITY_R - 4, dc),
-                            1 - smoothstep(4, 16, Math.max(ddx, ddz)));
+                            1 - smoothstep(-6, 2, Math.max(ddx, ddz)));  // grass to the runway edge
       const others = Math.min(1, rock + snow + sand + dirt + pave);
       splatA[i * 4] = Math.max(0, 1 - others) + 0.02;  // grass fills the rest
       splatA[i * 4 + 1] = dirt;
@@ -814,8 +814,109 @@ let buildingMat;
 
 /* --------------------------------------------------------- vegetation --- */
 const treeGrid = new Map();
+
+// Impostor trees: each tree is 3 cards at 0/60/120 deg, textured with views
+// pre-rendered from the real high-poly Poly Haven models (assets/trees.js).
+function impostorGeometry(aspect, views) {
+  const pos = [], nrm = [], uv = [], idx = [];
+  const hw = aspect / 2;                          // height normalised to 1
+  for (let v = 0; v < views; v++) {
+    const az = (v / views) * Math.PI;
+    const rx = Math.cos(az), rz = -Math.sin(az);  // bake camera's image-right axis
+    const u0 = v / views, u1 = (v + 1) / views;
+    const base = pos.length / 3;
+    for (const [s, y, u, t] of [[-1, 0, u0, 0], [1, 0, u1, 0], [1, 1, u1, 1], [-1, 1, u0, 1]]) {
+      pos.push(rx * hw * s, y, rz * hw * s);
+      // mostly-up normals (+ slight outward lean) light the card like a canopy,
+      // identically from both sides
+      const n = new THREE.Vector3(rx * s * 0.35, 1, rz * s * 0.35).normalize();
+      nrm.push(n.x, n.y, n.z);
+      uv.push(u, t);
+    }
+    idx.push(base, base + 1, base + 2, base, base + 2, base + 3);   // front
+    idx.push(base, base + 2, base + 1, base, base + 3, base + 2);   // back
+  }
+  const g = new THREE.BufferGeometry();
+  g.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+  g.setAttribute('normal', new THREE.Float32BufferAttribute(nrm, 3));
+  g.setAttribute('uv', new THREE.Float32BufferAttribute(uv, 2));
+  g.setIndex(idx);
+  return g;
+}
+
+function buildImpostorForest() {
+  const species = {
+    fir:   { N: 2600, minH: 9,  maxH: 17 },
+    broad: { N: 1400, minH: 6.5, maxH: 10.5 },
+  };
+  const meshes = {};
+  for (const [k, sp] of Object.entries(species)) {
+    const info = window.VH_TREES[k];
+    const tex = texLoader.load(info.src);
+    tex.encoding = THREE.sRGBEncoding;
+    tex.anisotropy = maxAniso;
+    const mat = new THREE.MeshStandardMaterial({
+      map: tex, alphaTest: 0.5, roughness: 0.92, metalness: 0, envMapIntensity: 0.35
+    });
+    const im = new THREE.InstancedMesh(impostorGeometry(info.aspect, info.views), mat, sp.N);
+    im.customDepthMaterial = new THREE.MeshDepthMaterial({
+      depthPacking: THREE.RGBADepthPacking, map: tex, alphaTest: 0.5
+    });
+    im.castShadow = true;
+    im.count = 0;
+    meshes[k] = { im, sp };
+  }
+  const m4 = new THREE.Matrix4(), q = new THREE.Quaternion(), e = new THREE.Euler();
+  const sc = new THREE.Vector3(), p = new THREE.Vector3(), col = new THREE.Color();
+  let tries = 0;
+  const total = species.fir.N + species.broad.N;
+  let placed = 0;
+  while (placed < total && tries < total * 40) {
+    tries++;
+    const x = (hash2(tries, 17) - 0.5) * (WORLD - 200);
+    const z = (hash2(tries, 71) - 0.5) * (WORLD - 200);
+    // forests: dense clumps with clearings, sparse singles elsewhere
+    const forest = vnoise(x * 0.0035 + 11.7, z * 0.0035 + 4.2);
+    if (hash2(tries, 33) > smoothstep(0.38, 0.62, forest) * 0.95 + 0.05) continue;
+    const h = terrainHeight(x, z);
+    if (h < WATER_Y + 2 || h > 56) continue;
+    if (roadDistInfo(x, z).d < 22) continue;
+    if (Math.hypot(x, z) < CITY_R + 30) continue;
+    if (Math.abs(x - STRIP.x) < STRIP.hl + 50 && Math.abs(z - STRIP.z) < STRIP.hw + 60) continue;
+    const sl = Math.hypot(terrainHeight(x + 3, z) - terrainHeight(x - 3, z),
+                          terrainHeight(x, z + 3) - terrainHeight(x, z - 3)) / 6;
+    if (sl > 0.55) continue;                      // nothing grows on cliffs
+    // broadleaf in lowland pockets, conifers higher up
+    let kind = (vnoise(x * 0.003, z * 0.003) > 0.55 && h < 40) ? 'broad' : 'fir';
+    if (meshes[kind].im.count >= meshes[kind].sp.N) kind = kind === 'fir' ? 'broad' : 'fir';
+    const M = meshes[kind];
+    if (M.im.count >= M.sp.N) break;
+    const height = lerp(M.sp.minH, M.sp.maxH, hash2(tries, 5));
+    e.set((hash2(tries, 13) - 0.5) * 0.06, hash2(tries, 9) * TAU, (hash2(tries, 15) - 0.5) * 0.06);
+    q.setFromEuler(e);
+    sc.set(height, height, height);
+    p.set(x, h - 0.25, z);
+    m4.compose(p, q, sc);
+    M.im.setMatrixAt(M.im.count, m4);
+    // subtle per-tree hue/brightness variation around neutral (x2 -> ~1.0)
+    col.setHSL(0.2 + hash2(tries, 4) * 0.1, 0.05 + hash2(tries, 6) * 0.15, 0.44 + hash2(tries, 8) * 0.1);
+    M.im.setColorAt(M.im.count, col.multiplyScalar(2.0));
+    M.im.count++;
+    placed++;
+    const key = Math.floor(x / 40) + ',' + Math.floor(z / 40);
+    if (!treeGrid.has(key)) treeGrid.set(key, []);
+    treeGrid.get(key).push({ x, z });
+  }
+  for (const { im } of Object.values(meshes)) {
+    im.instanceMatrix.needsUpdate = true;
+    if (im.instanceColor) im.instanceColor.needsUpdate = true;
+    scene.add(im);
+  }
+}
+
 (function buildNature() {
-  const N = 1500;
+  if (window.VH_TREES) buildImpostorForest();
+  const N = window.VH_TREES ? 0 : 1500;
   const trunkGeo = new THREE.CylinderGeometry(0.32, 0.5, 3.6, 7); trunkGeo.translate(0, 1.8, 0);
   // layered conifer
   const cone1 = new THREE.ConeGeometry(3.0, 5.4, 8); cone1.translate(0, 5.4, 0);
@@ -1943,6 +2044,11 @@ function stepDayNight(dt) {
     }
   }
   cloudGroup.rotation.y += dt * 0.0018;
+  // clouds are lit by the sky: grey-blue at night, warm at dawn/dusk
+  const cb = 0.1 + uDay * 0.9;
+  for (const c of cloudGroup.children) {
+    c.material.color.setRGB(cb + uDawn * 0.35, cb + uDawn * 0.12, cb * 1.05 + uNight * 0.04);
+  }
   skyDome.position.set(camera.position.x, 0, camera.position.z);
   updateEnvironment();
 }
